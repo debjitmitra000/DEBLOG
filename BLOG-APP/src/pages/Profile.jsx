@@ -19,46 +19,64 @@ const Profile = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isDisable, setIsDisable] = useState(false);
   const [extensionError, setExtensionError] = useState(null);
+  const [isProfileUpdated, setIsProfileUpdated] = useState(false);
 
   const auth = useAuth();
 
+  // Fetch current user profile data
   useEffect(() => {
     const fetchProfile = async () => {
       try {
+        // Get current user data
+        const currentUserResponse = await axiosInstance.get("/auth/current-user");
+        const userData = currentUserResponse.data.data.user;
+        
         setFormData({
-          name: auth.name,
-          email: auth.email,
+          name: userData.name || "",
+          email: userData.email || "",
         });
 
-        const res = await axiosInstance.get("/auth/profile-pic");
-        const profilePic = res.data.data.profilePic;
+        // Try to get profile picture
+        try {
+          const res = await axiosInstance.get("/auth/profile-pic");
+          if (res.data && res.data.data && res.data.data.profilePic) {
+            const profilePic = res.data.data.profilePic;
+            setFileId(profilePic._id || profilePic.id);
+            
+            // Get signed URL for the profile picture
+            try {
+              const picId = profilePic._id || profilePic.id;
+              const response = await axiosInstance.get(`/file/signed-url/${picId}`);
+              const { status, data } = response.data;
 
-        if (profilePic && profilePic.id) {
-          const response = await axiosInstance.get(`/file/signed-url/${profilePic.id}`);
-          const { status, data } = response.data;
-
-          if (status && data && data.signedUrl) {
-            setProfileImage(data.signedUrl);
-            setFileId(profilePic.id);
-            setFileName(profilePic._id);
-          } else {
-            setProfileImage(testImage);
+              if (status && data && (data.signedUrl || data.url)) {
+                setProfileImage(data.signedUrl || data.url);
+                setFileName(picId);
+              } else {
+                setProfileImage(testImage);
+              }
+            } catch (error) {
+              console.error("Error fetching signed URL:", error);
+              setProfileImage(testImage);
+            }
           }
+        } catch (error) {
+          console.error("Error fetching profile pic:", error);
+          setProfileImage(testImage);
         }
       } catch (error) {
+        console.error("Error fetching user data:", error);
         setProfileImage(testImage);
+        toast.error("Failed to load profile data", { position: "bottom-center", autoClose: true });
       }
     };
 
     fetchProfile();
-  }, []);
+  }, [isProfileUpdated]); // Re-fetch when profile is updated
 
   const handleChange = (e) => {
     setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
   };
-
-  useEffect(() => {
-  }, [fileName]);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -74,32 +92,46 @@ const Profile = () => {
     setIsDisable(true);
 
     try {
+      // Delete existing file if there is one
       if (fileId) {
-        await axiosInstance.delete(`/file/delete-file/${fileId}`);
+        try {
+          await axiosInstance.delete(`/file/delete-file/${fileId}`);
+        } catch (deleteError) {
+          console.error("Error deleting existing file:", deleteError);
+          // Continue with upload even if delete fails
+        }
       }
+      
+      // Upload new file
       const formData = new FormData();
       formData.append("image", file);
       
       const uploadResponse = await axiosInstance.post("/file/upload-file", formData);
-      setFileId(uploadResponse.data.data.key);
-      setFileName(uploadResponse.data.data._id);
-
-
-      const { key } = uploadResponse.data.data;
-
-      if (key) {
-        const response = await axiosInstance.get(`/file/signed-url/${key}`);
-        const { status, data } = response.data;
-
-        if (status && data && data.signedUrl) {
-          setProfileImage(data.signedUrl);
-          
-        } else {
-          setProfileImage(testImage);
-        }
+      console.log("Upload response:", uploadResponse.data);
+      
+      if (!uploadResponse.data.status) {
+        throw new Error(uploadResponse.data.message || "Upload failed");
       }
-      toast.success(uploadResponse.data.message, { position: "bottom-center", autoClose: true });
+      
+      const fileData = uploadResponse.data.data;
+      
+      // Store file ID in multiple formats to ensure we have what we need
+      const newFileId = fileData._id || fileData.id;
+      setFileId(newFileId);
+      setFileName(newFileId);
+      
+      // Get the URL for the newly uploaded image
+      const urlResponse = await axiosInstance.get(`/file/signed-url/${newFileId}`);
+      console.log("URL response:", urlResponse.data);
+      
+      if (urlResponse.data.status && urlResponse.data.data) {
+        const imageUrl = urlResponse.data.data.signedUrl || urlResponse.data.data.url;
+        setProfileImage(imageUrl);
+      }
+      
+      toast.success("Image uploaded successfully", { position: "bottom-center", autoClose: true });
     } catch (error) {
+      console.error("File change error:", error);
       setProfileImage(testImage);
       toast.error(error.response?.data?.message || "File upload failed", { position: "bottom-center", autoClose: true });
     } finally {
@@ -113,43 +145,54 @@ const Profile = () => {
 
     if (errors.name || errors.email) {
       setFormError(errors);
-    } else {
-      try {
-        setIsLoading(true);
-
-        let input = formData;
-
-        if(fileName){
-          input = {...input,profilePic: fileName}
-        }
-
-
-        const response = await axiosInstance.put("/auth/update-profile", input);
-
-
-        const authresponse = await axiosInstance.get("/auth/current-user")
-        const updateStoreUser=authresponse.data.data.user
-        
-
-
-        let userData = JSON.parse(localStorage.getItem('UserData'));
-        userData.user = updateStoreUser;
-        localStorage.setItem('UserData', JSON.stringify(userData));
-
-        toast.success(response.data.message, { position: "bottom-center", autoClose: true });
-        setFormData(initialFormData);
-        setFormError(initialFormError);
-        navigate("/post");
-      } catch (error) {
-        toast.error(error.response?.data?.message || "An error occurred", { position: "bottom-center", autoClose: true });
-      } finally {
-        setIsLoading(false);
+      return;
+    }
+    
+    setIsLoading(true);
+    
+    try {
+      // Prepare update data
+      let updateData = { ...formData };
+      
+      // Only include profilePic if we have a valid file ID
+      if (fileName) {
+        updateData.profilePic = fileName;
       }
+      
+      console.log("Submitting profile update with data:", updateData);
+      
+      // Update profile
+      const response = await axiosInstance.put("/auth/update-profile", updateData);
+      console.log("Update response:", response.data);
+      
+      if (!response.data.status) {
+        throw new Error(response.data.message || "Update failed");
+      }
+      
+      // Get updated user data
+      const authResponse = await axiosInstance.get("/auth/current-user");
+      const updatedUser = authResponse.data.data.user;
+      
+      // Update local storage
+      let userData = JSON.parse(localStorage.getItem('UserData'));
+      if (userData) {
+        userData.user = updatedUser;
+        localStorage.setItem('UserData', JSON.stringify(userData));
+        
+        // Trigger storage event to update other components
+        window.dispatchEvent(new Event('storage'));
+      }
+      
+      setIsProfileUpdated(prev => !prev); // Toggle to trigger re-fetch
+      toast.success("Profile updated successfully", { position: "bottom-center", autoClose: true });
+      navigate("/post");
+    } catch (error) {
+      console.error("Submit error:", error);
+      toast.error(error.response?.data?.message || "Failed to update profile", { position: "bottom-center", autoClose: true });
+    } finally {
+      setIsLoading(false);
     }
   };
-
-  
-
 
   return (
     <section className="bg-gray-50 dark:bg-gray-900 mt-10 flex items-center justify-center">
@@ -171,7 +214,7 @@ const Profile = () => {
               <img
                 src={profileImage}
                 alt="Profile"
-                className="w-36 h-36 p-1 rounded-full ring-2 ring-gray-300 dark:ring-gray-500"
+                className="w-36 h-36 p-1 rounded-full ring-2 ring-gray-300 dark:ring-gray-500 object-cover"
               />
             </div>
 
@@ -197,7 +240,7 @@ const Profile = () => {
                 className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-600 focus:border-primary-600 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
                 type="text"
                 name="name"
-                placeholder="Updated name"
+                placeholder="Your name"
                 value={formData.name}
                 onChange={handleChange}
               />
@@ -235,4 +278,3 @@ const Profile = () => {
 };
 
 export default Profile;
-``

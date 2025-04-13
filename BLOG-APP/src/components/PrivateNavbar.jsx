@@ -10,32 +10,50 @@ const PrivateNavbar = () => {
   const navigate = useNavigate();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [profileImage, setProfileImage] = useState(testImage); 
-  const [storageChange, setStorageChange] = useState(0);
+  const [profileImageKey, setProfileImageKey] = useState(Date.now()); // Force re-render on profile changes
 
+  // Fetch profile image whenever localStorage changes or component mounts
   useEffect(() => {
     const fetchProfileImage = async () => {
       try {
+        // Get profile picture ID
         const res = await axiosInstance.get("/auth/profile-pic");
-        const filename = res.data.data.profilePic.id; 
+        if (!res.data.data || !res.data.data.profilePic) {
+          throw new Error("No profile picture found");
+        }
+        
+        // Get the filename/id - handle both possible formats
+        const profilePic = res.data.data.profilePic;
+        const filename = profilePic._id || profilePic.id;
+        
+        if (!filename) {
+          throw new Error("Invalid profile picture data");
+        }
+        
+        // Get signed URL for the profile picture
         const response = await axiosInstance.get(`/file/signed-url/${filename}`);
-        const data = response.data;
+        const { status, data } = response.data;
   
-        if (data.status && data.data && data.data.signedUrl) {
-          setProfileImage(data.data.signedUrl);
+        // Check for signedUrl or url property
+        if (status && data && (data.signedUrl || data.url)) {
+          setProfileImage(data.signedUrl || data.url);
         } else {
           setProfileImage(testImage); 
         }
       } catch (error) {
+        console.error("Error fetching profile image:", error);
         setProfileImage(testImage); 
       }
     };
   
     fetchProfileImage();
-  }, [storageChange]);
+  }, [profileImageKey]);
 
+  // Listen for storage events
   useEffect(() => {
     const handleStorageChange = () => {
-      setStorageChange(prev => prev + 1); 
+      // Update our key to force component to re-fetch profile image
+      setProfileImageKey(Date.now());
     };
 
     window.addEventListener('storage', handleStorageChange);
@@ -44,7 +62,6 @@ const PrivateNavbar = () => {
       window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
-
 
   const handleLogout = () => {
     window.localStorage.removeItem("UserData");
@@ -76,7 +93,8 @@ const PrivateNavbar = () => {
             <img
               src={profileImage}
               alt="Profile"
-              className="w-10 h-10 p-1 rounded-full ring-2 ring-gray-300 dark:ring-gray-500"
+              className="w-10 h-10 p-1 rounded-full ring-2 ring-gray-300 dark:ring-gray-500 object-cover"
+              key={profileImageKey} // Force re-render when key changes
             />
           </NavLink>
           

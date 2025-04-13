@@ -1,5 +1,5 @@
-import { useNavigate,useParams } from "react-router-dom";
-import { useEffect,useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { useEffect, useState } from "react";
 import axiosInstance from "../../utils/axiosInstance";
 import { toast } from "react-toastify";
 import { useAuth } from "../../components/context/AuthContext";
@@ -8,60 +8,72 @@ const DetailPost = () => {
   const navigate = useNavigate();
   const params = useParams();
   const postId = params.id;
-  const [post,setPost] = useState(null)
-  const [fileUrl,setFileUrl] = useState(null)
+  const [post, setPost] = useState(null);
+  const [fileUrl, setFileUrl] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [selectedPost, setSelectedPost] = useState(null);
   const [fileId, setFileId] = useState(null);
 
-
   const auth = useAuth();
   const userIdAuth = auth?._id;
 
-  useEffect(()=>{
-    if(postId){
-      const getPost = async()=>{
+  useEffect(() => {
+    if (postId) {
+      const getPost = async () => {
         try {
           const response = await axiosInstance.get(`/post/${postId}`);
           const data = response.data.data;
-          setPost(data.post)
+          setPost(data.post);
 
+          // Handle file differently with Cloudinary
           if (data.post.file) {
-            setFileId(data.post.file.id);
+            // Store the file ID for deletion purposes
+            setFileId(data.post.file._id);
+            
+            // If the file object has a URL property (from Cloudinary), use it directly
+            if (data.post.file.url) {
+              setFileUrl(data.post.file.url);
+            } 
+            // Fall back to the old method if needed
+            else if (data.post.file._id) {
+              // This will trigger the second useEffect to fetch the URL
+              // We don't set fileUrl here as the second useEffect will handle it
+            }
           }
-          
         } catch (error) {
           const response = error.response;
-          const data = response.data;
-          toast.error(data.message, { position: "bottom-center", autoClose: true });
+          const data = response?.data;
+          toast.error(data?.message || "Failed to load post", { position: "bottom-center", autoClose: true });
         }
-      }
+      };
       getPost();
     }
-  },[postId])
+  }, [postId]);
 
-  useEffect(()=>{
-    if(post && post?.file){
-      const getFile = async () =>{
+  // Only use this effect if we don't have a direct URL from Cloudinary
+  useEffect(() => {
+    // Only fetch the signed URL if we have a post with a file but no fileUrl yet
+    if (post && post.file && post.file._id && !fileUrl) {
+      const getFile = async () => {
         try {
-          const response = await axiosInstance.get(`/file/signed-url/${post.file.id}`);
+          const response = await axiosInstance.get(`/file/file-url/${post.file._id}`);
           const data = response.data.data;
-          setFileUrl(data.signedUrl)
+          setFileUrl(data.url || data.signedUrl); // Handle both new and old response formats
         } catch (error) {
-          const response = error.response;
-          const data = response.data;
-          toast.error(data.message, { position: "bottom-center", autoClose: true });
+          console.log("Error fetching file URL:", error);
+          // Don't show toast for file errors, just log them
+          // This avoids excessive error messages for users
         }
-      }
+      };
       getFile();
     }
-  },[post])
+  }, [post, fileUrl]);
 
   const handleDelete = async () => {
     if (!selectedPost) return;
   
     try {
-      if(fileId){
+      if (fileId) {
         await axiosInstance.delete(`/file/delete-file/${fileId}`);
       }
       await axiosInstance.delete(`/post/${selectedPost._id}`);
@@ -70,11 +82,11 @@ const DetailPost = () => {
         autoClose: true,
       });
       setShowModal(false);
-      navigate("/post")
+      navigate("/post");
     } catch (error) {
       const response = error.response;
-      const data = response.data;
-      toast.error(data.message || "An error occurred while deleting the category", {
+      const data = response?.data;
+      toast.error(data?.message || "An error occurred while deleting the post", {
         position: "bottom-center",
         autoClose: true,
       });
@@ -89,7 +101,7 @@ const DetailPost = () => {
   const createdAt = new Date(post.createdAt).toLocaleString();
   const updatedAt = new Date(post.updatedAt).toLocaleString();
   const isSameTime = createdAt === updatedAt;
-  const userIdPost = post?.updatedBy._id
+  const userIdPost = post?.updatedBy._id;
   
   return (
     <div className="px-4 py-6 md:px-8 md:py-10">
@@ -135,6 +147,11 @@ const DetailPost = () => {
             className="mt-6 w-full max-h-80 object-contain rounded-lg shadow-sm"
             src={fileUrl}
             alt="Post Image"
+            onError={(e) => {
+              e.target.onerror = null;
+              e.target.style.display = 'none';
+              console.log("Failed to load image");
+            }}
           />
         )}
 
@@ -157,7 +174,7 @@ const DetailPost = () => {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
         <div className="bg-white rounded-lg shadow-lg p-6 w-full max-w-md flex flex-col items-center">
           <h2 className="text-lg font-semibold mb-4 text-center">
-          Are you sure you want to delete this category?
+            Are you sure you want to delete this post?
           </h2>
           <div className="flex justify-center space-x-4">
             <button
